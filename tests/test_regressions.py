@@ -884,6 +884,28 @@ class TestMissingObservationsAreNotZeroReturns:
 
         assert not curve.isna().any()
 
+    @pytest.mark.parametrize("prepare", [True, False])
+    def test_geometric_return_without_observations_is_undefined(self, prepare):
+        missing = pd.Series(
+            [np.nan, np.nan], index=pd.date_range("2024-01-01", periods=2)
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            assert np.isnan(stats.expected_return(missing, prepare_returns=prepare))
+
+    @pytest.mark.parametrize("prepare", [True, False])
+    def test_geometric_return_keeps_empty_and_flat_columns_distinct(self, prepare):
+        frame = pd.DataFrame(
+            {"missing": [np.nan, np.nan], "flat": [0.0, 0.0], "growth": [0.1, 0.1]},
+            index=pd.date_range("2024-01-01", periods=2),
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            result = stats.expected_return(frame, prepare_returns=prepare)
+        assert np.isnan(result["missing"])
+        assert result["flat"] == 0
+        assert result["growth"] == pytest.approx(0.1)
+
 
 class TestConditionalValueAtRisk:
     """

@@ -260,7 +260,15 @@ def expected_return(
     # np.prod would return NaN for the whole series, and len() would stretch
     # the exponent over periods that were never observed.
     observed = returns.count()
-    return _np.nanprod(1 + returns, axis=0) ** (1 / observed) - 1
+    if isinstance(observed, _pd.Series):
+        observed = observed.replace(0, _np.nan)
+    elif observed == 0:
+        return _np.nan
+    result = _np.nanprod(1 + returns, axis=0) ** (1 / observed) - 1
+    # NumPy defines 1 ** NaN as 1, so mask unobserved columns explicitly.
+    return (
+        result.where(observed.notna()) if isinstance(observed, _pd.Series) else result
+    )
 
 
 def geometric_mean(
