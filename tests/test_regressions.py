@@ -930,3 +930,90 @@ class TestConditionalValueAtRisk:
 
         assert list(result.index) == ["a", "b"]
         assert result["b"] == pytest.approx(result["a"] * 2, rel=1e-9)
+
+
+class TestConstantSeriesSharpeNoise:
+    """Float-noise std on constant series must not produce ~1e16 ratios."""
+
+    N = 300
+
+    def _idx(self):
+        return pd.bdate_range("2020-01-01", periods=self.N)
+
+    @pytest.mark.parametrize("dtype", [np.float64, np.float32])
+    @pytest.mark.parametrize("c", [1e-6, 0.001, 0.0123, 0.3, -0.001, -0.3])
+    def test_constant_series_not_huge(self, c, dtype):
+        s = pd.Series(np.full(self.N, c, dtype=dtype), index=self._idx())
+        sh = qs.stats.sharpe(s)
+        assert np.isinf(sh) or np.isnan(sh)
+        assert np.isnan(qs.stats.risk_return_ratio(s))
+
+    @pytest.mark.parametrize("dtype", [np.float64, np.float32])
+    @pytest.mark.parametrize("base", [1e-6, 0.001, 0.3, -0.001])
+    def test_one_ulp_difference_not_zeroed(self, base, dtype):
+        # all values equal except a few that differ by exactly 1 ULP
+        b = dtype(base)
+        up = np.nextafter(b, dtype(np.inf))
+        x = np.full(self.N, b, dtype=dtype)
+        x[::50] = up
+        assert up != b
+        s = pd.Series(x, index=self._idx())
+        sd = float(np.std(x.astype(np.float64), ddof=1))
+        assert sd > 0
+        expected = float(np.mean(x.astype(np.float64)) / sd)
+        assert qs.stats.risk_return_ratio(s) == pytest.approx(expected, rel=1e-3)
+        assert qs.stats.sharpe(s, annualize=False) == pytest.approx(expected, rel=1e-3)
+
+    @pytest.mark.parametrize("dtype", [np.float64, np.float32])
+    def test_alternating_adjacent_values_not_zeroed(self, dtype):
+        b = dtype(0.001)
+        up = np.nextafter(b, dtype(np.inf))
+        x = np.where(np.arange(self.N) % 2 == 0, b, up).astype(dtype)
+        s = pd.Series(x, index=self._idx())
+        assert np.isfinite(qs.stats.risk_return_ratio(s))
+
+    def test_constant_with_nans_is_constant(self):
+        x = np.full(self.N, 0.001)
+        x[::7] = np.nan
+        s = pd.Series(x, index=self._idx())
+        assert np.isnan(qs.stats.risk_return_ratio(s))
+
+    def test_all_nan_column_in_dataframe_stays_nan(self):
+        df = pd.DataFrame({"a": np.nan, "b": 0.001}, index=self._idx())
+        assert np.isnan(qs.stats.risk_return_ratio(df)["a"])
+
+    def test_noisy_series_unchanged(self):
+        rng = np.random.default_rng(0)
+        idx = pd.bdate_range("2020-01-01", periods=500)
+        s = pd.Series(rng.normal(0.001, 0.01, 500), index=idx)
+        assert qs.stats.sharpe(s) == pytest.approx(s.mean() / s.std(ddof=1) * np.sqrt(252))
+
+    def test_single_observation_stays_nan(self):
+        s = pd.Series([0.01], index=pd.bdate_range("2020-01-01", periods=1))
+        assert np.isnan(qs.stats.sharpe(s))
+
+    def test_dataframe_columns_independent(self):
+        rng = np.random.default_rng(1)
+        df = pd.DataFrame(
+            {
+                "flat": 0.001,
+                "flat_big": 0.3,
+                "noisy": rng.normal(0.001, 0.01, self.N),
+                "tiny_real": 1e-3 + 1e-9 * (np.arange(self.N) % 2),
+            },
+            index=self._idx(),
+        )
+        out = qs.stats.sharpe(df, annualize=False)
+        for col in ("flat", "flat_big"):
+            assert np.isinf(out[col]) or np.isnan(out[col])
+        assert out["noisy"] == pytest.approx(df["noisy"].mean() / df["noisy"].std(ddof=1))
+        assert out["tiny_real"] == pytest.approx(df["tiny_real"].mean() / df["tiny_real"].std(ddof=1))
+        rr = qs.stats.risk_return_ratio(df)
+        assert np.isnan(rr["flat"]) and np.isnan(rr["flat_big"])
+        assert np.isfinite(rr["tiny_real"])
+
+
+def test_recovery_factor_contract_unchanged():
+    """recovery_factor uses |total return| / |max drawdown| (existing behavior)."""
+    s = pd.Series([-0.01, 0.005, -0.02, 0.002, -0.01] * 20, index=pd.bdate_range("2020-01-01", periods=100))
+    assert qs.stats.recovery_factor(s) > 0

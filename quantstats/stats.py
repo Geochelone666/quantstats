@@ -935,6 +935,31 @@ def autocorr_penalty(
 # ======= METRICS =======
 
 
+def _snap_zero_std(std, returns):
+    """
+    Return exactly 0 as the std of a constant column.
+
+    A constant series such as ``[0.001] * n`` has a computed std of order
+    ``eps * |value|`` (about 2e-19) rather than exactly 0, so mean/std blows
+    up to ~1e16. A column is constant only when all its non-NaN observations
+    are identical, which is tested exactly (no tolerance), so a series that
+    differs by even one ULP is never zeroed. A std that is NaN (fewer than
+    two observations) stays NaN. Works for a Series (scalar std) and a
+    DataFrame (per-column std).
+    """
+    def _is_constant(col):
+        v = _np.asarray(col, dtype=float)
+        v = v[~_np.isnan(v)]
+        return v.size >= 2 and bool((v == v[0]).all())
+
+    if isinstance(std, _pd.Series):
+        const = _pd.Series({c: _is_constant(returns[c]) for c in std.index}, dtype=bool)
+        return std.mask(const & std.notna(), 0.0)
+    if _is_constant(returns) and not _np.isnan(std):
+        return 0.0
+    return std
+
+
 def sharpe(
     returns: Returns,
     rf: float = 0.0,
@@ -980,7 +1005,7 @@ def sharpe(
     returns = _utils._prepare_returns(returns, rf, periods)
 
     # Calculate standard deviation as denominator
-    divisor = returns.std(ddof=1)
+    divisor = _snap_zero_std(returns.std(ddof=1), returns)
 
     # Apply autocorrelation penalty if smart mode enabled
     if smart:
@@ -2623,7 +2648,7 @@ def risk_return_ratio(returns, prepare_returns=True):
         returns = _utils._prepare_returns(returns)
 
     # Calculate mean return divided by standard deviation
-    std = returns.std()
+    std = _snap_zero_std(returns.std(), returns)
 
     # Handle both Series (DataFrame input) and scalar (Series input) cases
     if isinstance(std, _pd.Series):
