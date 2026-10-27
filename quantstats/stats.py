@@ -2623,7 +2623,8 @@ def recovery_factor(returns, rf=0.0, prepare_returns=True):
         # Series input - scalar division
         if max_dd == 0:
             return _np.nan
-    
+        return abs(total_returns) / abs(max_dd)
+
 
 def risk_return_ratio(returns, prepare_returns=True):
     """

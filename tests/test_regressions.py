@@ -988,3 +988,9 @@ class TestConstantSeriesSharpeNoise:
         rr = qs.stats.risk_return_ratio(df)
         assert np.isnan(rr["flat"]) and np.isnan(rr["flat_big"])
         assert np.isfinite(rr["tiny_real"])
+
+
+def test_recovery_factor_contract_unchanged():
+    """recovery_factor uses |total return| / |max drawdown| (existing behavior)."""
+    s = pd.Series([-0.01, 0.005, -0.02, 0.002, -0.01] * 20, index=pd.bdate_range("2020-01-01", periods=100))
+    assert qs.stats.recovery_factor(s) > 0
