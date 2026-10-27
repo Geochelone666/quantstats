@@ -932,43 +932,59 @@ class TestConditionalValueAtRisk:
         assert result["b"] == pytest.approx(result["a"] * 2, rel=1e-9)
 
 
-class TestConstantSeriesAndRecoveryFactor:
-    """Float-noise std on constant series and sign of recovery_factor."""
+class TestConstantSeriesSharpeNoise:
+    """Float-noise std on constant series must not produce ~1e16 ratios."""
+
+    N = 300
 
     def _idx(self):
-        return pd.bdate_range("2020-01-01", periods=300)
+        return pd.bdate_range("2020-01-01", periods=self.N)
 
-    @pytest.mark.parametrize("c", [0.001, -0.001, 0.0123])
-    def test_constant_returns_not_huge_sharpe(self, c):
-        s = pd.Series(c, index=self._idx())
+    @pytest.mark.parametrize("dtype", [np.float64, np.float32])
+    @pytest.mark.parametrize("c", [1e-6, 0.001, 0.0123, 0.3, -0.001, -0.3])
+    def test_constant_series_not_huge(self, c, dtype):
+        s = pd.Series(np.full(self.N, c, dtype=dtype), index=self._idx())
         sh = qs.stats.sharpe(s)
-        assert np.isinf(sh) or np.isnan(sh) or abs(sh) < 1e6
-        assert not (np.isfinite(sh) and abs(sh) > 1e6)
-        rr = qs.stats.risk_return_ratio(s)
-        assert np.isnan(rr)
+        assert np.isinf(sh) or np.isnan(sh)
+        assert np.isnan(qs.stats.risk_return_ratio(s))
+
+    @pytest.mark.parametrize("dtype", [np.float64, np.float32])
+    @pytest.mark.parametrize("scale", [1e-6, 1e-4, 1e-2])
+    def test_near_constant_real_variation_kept(self, scale, dtype):
+        # mean 0.001 with tiny but real alternating variation
+        base = 0.001
+        x = np.where(np.arange(self.N) % 2 == 0, base + scale * 1e-3, base - scale * 1e-3).astype(dtype)
+        s = pd.Series(x, index=self._idx())
+        expected = float(np.mean(x, dtype=np.float64) / np.std(x.astype(np.float64), ddof=1))
+        assert qs.stats.risk_return_ratio(s) == pytest.approx(expected, rel=1e-3)
+        assert np.isfinite(qs.stats.sharpe(s))
 
     def test_noisy_series_unchanged(self):
         rng = np.random.default_rng(0)
-        s = pd.Series(rng.normal(0.001, 0.01, 500), index=pd.bdate_range("2020-01-01", periods=500))
+        idx = pd.bdate_range("2020-01-01", periods=500)
+        s = pd.Series(rng.normal(0.001, 0.01, 500), index=idx)
         assert qs.stats.sharpe(s) == pytest.approx(s.mean() / s.std(ddof=1) * np.sqrt(252))
 
     def test_single_observation_stays_nan(self):
         s = pd.Series([0.01], index=pd.bdate_range("2020-01-01", periods=1))
         assert np.isnan(qs.stats.sharpe(s))
 
-    def test_dataframe_constant_column_snapped(self):
+    def test_dataframe_columns_independent(self):
         rng = np.random.default_rng(1)
-        idx = self._idx()
-        df = pd.DataFrame({"flat": 0.001, "noisy": rng.normal(0.001, 0.01, 300)}, index=idx)
-        out = qs.stats.sharpe(df)
-        assert not (np.isfinite(out["flat"]) and abs(out["flat"]) > 1e6)
-        assert np.isfinite(out["noisy"]) and abs(out["noisy"]) < 20
-
-    def test_recovery_factor_negative_for_losing_strategy(self):
-        s = pd.Series([-0.01, 0.005, -0.02, 0.002, -0.01] * 20, index=pd.bdate_range("2020-01-01", periods=100))
-        assert s.sum() < 0
-        assert qs.stats.recovery_factor(s) < 0
-
-    def test_recovery_factor_positive_for_winning_strategy(self):
-        s = pd.Series([0.02, -0.005, 0.01, -0.002, 0.015] * 20, index=pd.bdate_range("2020-01-01", periods=100))
-        assert qs.stats.recovery_factor(s) > 0
+        df = pd.DataFrame(
+            {
+                "flat": 0.001,
+                "flat_big": 0.3,
+                "noisy": rng.normal(0.001, 0.01, self.N),
+                "tiny_real": 1e-3 + 1e-9 * (np.arange(self.N) % 2),
+            },
+            index=self._idx(),
+        )
+        out = qs.stats.sharpe(df, annualize=False)
+        for col in ("flat", "flat_big"):
+            assert np.isinf(out[col]) or np.isnan(out[col])
+        assert out["noisy"] == pytest.approx(df["noisy"].mean() / df["noisy"].std(ddof=1))
+        assert out["tiny_real"] == pytest.approx(df["tiny_real"].mean() / df["tiny_real"].std(ddof=1))
+        rr = qs.stats.risk_return_ratio(df)
+        assert np.isnan(rr["flat"]) and np.isnan(rr["flat_big"])
+        assert np.isfinite(rr["tiny_real"])

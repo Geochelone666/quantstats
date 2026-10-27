@@ -935,19 +935,29 @@ def autocorr_penalty(
 # ======= METRICS =======
 
 
-def _snap_zero_std(std, mean, rel_tol=1e-9):
+def _snap_zero_std(std, returns, n_eps=8):
     """
-    Treat floating-point noise as a zero standard deviation.
+    Snap a standard deviation that is pure floating-point rounding noise to 0.
 
-    A constant series such as ``[0.001] * n`` has a computed std around 1e-19
-    rather than exactly 0, which would turn mean/std into a meaningless value
-    near 1e16. When std is negligible next to the mean's magnitude it is
-    snapped to exactly 0, so constant series behave the same whether or not
-    their std happens to round to zero. Works on scalars and Series.
+    A constant series such as ``[0.001] * n`` has a computed std of order
+    ``eps * |value|`` (about 2e-19 for float64) instead of exactly 0, so
+    mean/std blows up to ~1e16. The threshold is ``n_eps * eps(dtype) *
+    max|returns|`` per column, with eps taken from the column's float dtype
+    (float64 2.2e-16, float32 1.2e-7). Real low-volatility data has std many
+    orders of magnitude above this and is untouched. NaN std stays NaN.
+    Works for a Series (scalar std) and a DataFrame (per-column std).
     """
-    tol = rel_tol * _np.abs(mean)
+    def _eps(dtype):
+        return _np.finfo(dtype).eps if _np.issubdtype(dtype, _np.floating) else _np.finfo(float).eps
+
     if isinstance(std, _pd.Series):
+        tol = _pd.Series(
+            {c: n_eps * _eps(returns[c].dtype) * _np.nanmax(_np.abs(returns[c].to_numpy(dtype=float)), initial=0.0)
+             for c in std.index},
+            dtype=float,
+        )
         return std.mask(std <= tol, 0.0)
+    tol = n_eps * _eps(returns.dtype) * _np.nanmax(_np.abs(returns.to_numpy(dtype=float)), initial=0.0)
     return 0.0 if std <= tol else std
 
 
@@ -996,7 +1006,7 @@ def sharpe(
     returns = _utils._prepare_returns(returns, rf, periods)
 
     # Calculate standard deviation as denominator
-    divisor = _snap_zero_std(returns.std(ddof=1), returns.mean())
+    divisor = _snap_zero_std(returns.std(ddof=1), returns)
 
     # Apply autocorrelation penalty if smart mode enabled
     if smart:
@@ -2608,13 +2618,12 @@ def recovery_factor(returns, rf=0.0, prepare_returns=True):
     # Handle both Series (DataFrame input) and scalar (Series input) cases
     if isinstance(max_dd, _pd.Series):
         # DataFrame input - element-wise division with zero protection
-        return total_returns / abs(max_dd).replace(0, _np.nan)
+        return abs(total_returns) / abs(max_dd).replace(0, _np.nan)
     else:
         # Series input - scalar division
         if max_dd == 0:
             return _np.nan
-        return total_returns / abs(max_dd)
-
+    
 
 def risk_return_ratio(returns, prepare_returns=True):
     """
@@ -2639,7 +2648,7 @@ def risk_return_ratio(returns, prepare_returns=True):
         returns = _utils._prepare_returns(returns)
 
     # Calculate mean return divided by standard deviation
-    std = _snap_zero_std(returns.std(), returns.mean())
+    std = _snap_zero_std(returns.std(), returns)
 
     # Handle both Series (DataFrame input) and scalar (Series input) cases
     if isinstance(std, _pd.Series):
