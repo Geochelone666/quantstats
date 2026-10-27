@@ -935,30 +935,29 @@ def autocorr_penalty(
 # ======= METRICS =======
 
 
-def _snap_zero_std(std, returns, n_eps=8):
+def _snap_zero_std(std, returns):
     """
-    Snap a standard deviation that is pure floating-point rounding noise to 0.
+    Return exactly 0 as the std of a constant column.
 
     A constant series such as ``[0.001] * n`` has a computed std of order
-    ``eps * |value|`` (about 2e-19 for float64) instead of exactly 0, so
-    mean/std blows up to ~1e16. The threshold is ``n_eps * eps(dtype) *
-    max|returns|`` per column, with eps taken from the column's float dtype
-    (float64 2.2e-16, float32 1.2e-7). Real low-volatility data has std many
-    orders of magnitude above this and is untouched. NaN std stays NaN.
-    Works for a Series (scalar std) and a DataFrame (per-column std).
+    ``eps * |value|`` (about 2e-19) rather than exactly 0, so mean/std blows
+    up to ~1e16. A column is constant only when all its non-NaN observations
+    are identical, which is tested exactly (no tolerance), so a series that
+    differs by even one ULP is never zeroed. A std that is NaN (fewer than
+    two observations) stays NaN. Works for a Series (scalar std) and a
+    DataFrame (per-column std).
     """
-    def _eps(dtype):
-        return _np.finfo(dtype).eps if _np.issubdtype(dtype, _np.floating) else _np.finfo(float).eps
+    def _is_constant(col):
+        v = _np.asarray(col, dtype=float)
+        v = v[~_np.isnan(v)]
+        return v.size >= 2 and bool((v == v[0]).all())
 
     if isinstance(std, _pd.Series):
-        tol = _pd.Series(
-            {c: n_eps * _eps(returns[c].dtype) * _np.nanmax(_np.abs(returns[c].to_numpy(dtype=float)), initial=0.0)
-             for c in std.index},
-            dtype=float,
-        )
-        return std.mask(std <= tol, 0.0)
-    tol = n_eps * _eps(returns.dtype) * _np.nanmax(_np.abs(returns.to_numpy(dtype=float)), initial=0.0)
-    return 0.0 if std <= tol else std
+        const = _pd.Series({c: _is_constant(returns[c]) for c in std.index}, dtype=bool)
+        return std.mask(const & std.notna(), 0.0)
+    if _is_constant(returns) and not _np.isnan(std):
+        return 0.0
+    return std
 
 
 def sharpe(

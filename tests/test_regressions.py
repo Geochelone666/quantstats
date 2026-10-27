@@ -949,15 +949,38 @@ class TestConstantSeriesSharpeNoise:
         assert np.isnan(qs.stats.risk_return_ratio(s))
 
     @pytest.mark.parametrize("dtype", [np.float64, np.float32])
-    @pytest.mark.parametrize("scale", [1e-6, 1e-4, 1e-2])
-    def test_near_constant_real_variation_kept(self, scale, dtype):
-        # mean 0.001 with tiny but real alternating variation
-        base = 0.001
-        x = np.where(np.arange(self.N) % 2 == 0, base + scale * 1e-3, base - scale * 1e-3).astype(dtype)
+    @pytest.mark.parametrize("base", [1e-6, 0.001, 0.3, -0.001])
+    def test_one_ulp_difference_not_zeroed(self, base, dtype):
+        # all values equal except a few that differ by exactly 1 ULP
+        b = dtype(base)
+        up = np.nextafter(b, dtype(np.inf))
+        x = np.full(self.N, b, dtype=dtype)
+        x[::50] = up
+        assert up != b
         s = pd.Series(x, index=self._idx())
-        expected = float(np.mean(x, dtype=np.float64) / np.std(x.astype(np.float64), ddof=1))
+        sd = float(np.std(x.astype(np.float64), ddof=1))
+        assert sd > 0
+        expected = float(np.mean(x.astype(np.float64)) / sd)
         assert qs.stats.risk_return_ratio(s) == pytest.approx(expected, rel=1e-3)
-        assert np.isfinite(qs.stats.sharpe(s))
+        assert qs.stats.sharpe(s, annualize=False) == pytest.approx(expected, rel=1e-3)
+
+    @pytest.mark.parametrize("dtype", [np.float64, np.float32])
+    def test_alternating_adjacent_values_not_zeroed(self, dtype):
+        b = dtype(0.001)
+        up = np.nextafter(b, dtype(np.inf))
+        x = np.where(np.arange(self.N) % 2 == 0, b, up).astype(dtype)
+        s = pd.Series(x, index=self._idx())
+        assert np.isfinite(qs.stats.risk_return_ratio(s))
+
+    def test_constant_with_nans_is_constant(self):
+        x = np.full(self.N, 0.001)
+        x[::7] = np.nan
+        s = pd.Series(x, index=self._idx())
+        assert np.isnan(qs.stats.risk_return_ratio(s))
+
+    def test_all_nan_column_in_dataframe_stays_nan(self):
+        df = pd.DataFrame({"a": np.nan, "b": 0.001}, index=self._idx())
+        assert np.isnan(qs.stats.risk_return_ratio(df)["a"])
 
     def test_noisy_series_unchanged(self):
         rng = np.random.default_rng(0)
