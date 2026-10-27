@@ -935,6 +935,22 @@ def autocorr_penalty(
 # ======= METRICS =======
 
 
+def _snap_zero_std(std, mean, rel_tol=1e-9):
+    """
+    Treat floating-point noise as a zero standard deviation.
+
+    A constant series such as ``[0.001] * n`` has a computed std around 1e-19
+    rather than exactly 0, which would turn mean/std into a meaningless value
+    near 1e16. When std is negligible next to the mean's magnitude it is
+    snapped to exactly 0, so constant series behave the same whether or not
+    their std happens to round to zero. Works on scalars and Series.
+    """
+    tol = rel_tol * _np.abs(mean)
+    if isinstance(std, _pd.Series):
+        return std.mask(std <= tol, 0.0)
+    return 0.0 if std <= tol else std
+
+
 def sharpe(
     returns: Returns,
     rf: float = 0.0,
@@ -980,7 +996,7 @@ def sharpe(
     returns = _utils._prepare_returns(returns, rf, periods)
 
     # Calculate standard deviation as denominator
-    divisor = returns.std(ddof=1)
+    divisor = _snap_zero_std(returns.std(ddof=1), returns.mean())
 
     # Apply autocorrelation penalty if smart mode enabled
     if smart:
@@ -2592,12 +2608,12 @@ def recovery_factor(returns, rf=0.0, prepare_returns=True):
     # Handle both Series (DataFrame input) and scalar (Series input) cases
     if isinstance(max_dd, _pd.Series):
         # DataFrame input - element-wise division with zero protection
-        return abs(total_returns) / abs(max_dd).replace(0, _np.nan)
+        return total_returns / abs(max_dd).replace(0, _np.nan)
     else:
         # Series input - scalar division
         if max_dd == 0:
             return _np.nan
-        return abs(total_returns) / abs(max_dd)
+        return total_returns / abs(max_dd)
 
 
 def risk_return_ratio(returns, prepare_returns=True):
@@ -2623,7 +2639,7 @@ def risk_return_ratio(returns, prepare_returns=True):
         returns = _utils._prepare_returns(returns)
 
     # Calculate mean return divided by standard deviation
-    std = returns.std()
+    std = _snap_zero_std(returns.std(), returns.mean())
 
     # Handle both Series (DataFrame input) and scalar (Series input) cases
     if isinstance(std, _pd.Series):
